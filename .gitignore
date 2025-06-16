@@ -1,0 +1,16 @@
+# Ignore environment files
+.env
+
+# Node.js dependencies
+node_modules/
+
+# Python virtual env
+venv/
+__pycache__/
+
+# Logs and system files
+*.log
+.DS_Store
+
+# VSCode settings
+.vscode/
