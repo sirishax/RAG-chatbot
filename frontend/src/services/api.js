@@ -1,12 +1,17 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const normalizeApiBaseUrl = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  return value.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+};
+
+const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
   timeout: 300000, // 5 minutes for large files
   maxContentLength: Infinity,
   maxBodyLength: Infinity,
@@ -20,13 +25,10 @@ const api = axios.create({
  */
 export const uploadPDF = async (file, onUploadProgress) => {
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', file, file.name);
 
   try {
     const response = await api.post('/api/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
       onUploadProgress,
       timeout: 300000, // 5 minutes
       maxContentLength: Infinity,
@@ -45,7 +47,11 @@ export const uploadPDF = async (file, onUploadProgress) => {
  */
 export const askQuestion = async (question) => {
   try {
-    const response = await api.post('/api/ask', { question });
+    const response = await api.post('/api/ask', { question }, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
     return response.data;
   } catch (error) {
     throw new Error(error.response?.data?.error || 'Failed to get answer');
@@ -58,7 +64,11 @@ export const askQuestion = async (question) => {
  */
 export const checkStatus = async () => {
   try {
-    const response = await api.get('/api/status');
+    const response = await api.get('/api/status', {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
     return response.data;
   } catch (error) {
     throw new Error('Failed to check status');

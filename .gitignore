@@ -1,11 +1,15 @@
 # Ignore environment files
 .env
+**/.env
 
 # Node.js dependencies
 node_modules/
+frontend/dist/
+frontend/.vercel/
 
 # Python virtual env
 venv/
+.venv/
 __pycache__/
 
 # Logs and system files

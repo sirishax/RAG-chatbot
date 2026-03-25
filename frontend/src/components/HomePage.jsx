@@ -24,7 +24,7 @@ const HomePage = ({ onGetStarted }) => {
     {
       icon: <FaBrain className="text-4xl" />,
       title: "AI-Powered Analysis",
-      description: "Powered by Mistral-7B and advanced RAG technology for accurate, context-aware responses.",
+      description: "Powered by Gemini and advanced RAG technology for accurate, context-aware responses.",
       color: "from-purple-500 to-pink-500"
     },
     {

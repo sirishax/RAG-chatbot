@@ -16,9 +16,9 @@ const PDFUpload = ({ onUploadSuccess }) => {
 
   const handleFileSelect = async (file) => {
     try {
-      await handleUpload(file);
+      const response = await handleUpload(file);
       if (onUploadSuccess) {
-        onUploadSuccess(file);
+        onUploadSuccess(response?.data || { filename: file.name });
       }
     } catch (err) {
       console.error('Upload failed:', err);

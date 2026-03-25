@@ -105,7 +105,7 @@ const ChatInterface = ({ isDisabled }) => {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 w-full max-w-2xl mt-4 sm:mt-6\"
+                className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 w-full max-w-2xl mt-4 sm:mt-6"
               >
                 {[
                   'What is this document about?',
