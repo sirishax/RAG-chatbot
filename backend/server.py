@@ -35,7 +35,7 @@ def parse_cors_origins(raw_origins):
 
 
 CORS(app, resources={
-    r"/api/*": {
+    r"/api/.*": {
         'origins': parse_cors_origins(os.getenv('CORS_ORIGINS')),
     }
 })
