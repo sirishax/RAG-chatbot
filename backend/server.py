@@ -40,6 +40,18 @@ CORS(app, resources={
     }
 })
 
+
+@app.after_request
+def add_cors_headers(response):
+    """Ensure CORS headers are always present for API responses."""
+    if request.path.startswith('/api/'):
+        origin = request.headers.get('Origin')
+        response.headers['Access-Control-Allow-Origin'] = origin or '*'
+        response.headers['Vary'] = 'Origin'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 DATASET_FOLDER = os.path.join(BASE_DIR, 'dataset')
