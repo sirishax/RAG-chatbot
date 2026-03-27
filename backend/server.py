@@ -27,10 +27,8 @@ load_dotenv(find_dotenv())
 def parse_cors_origins(raw_origins):
     """Parse CORS origins from comma-separated environment variable."""
     if not raw_origins:
-        return [
-            'http://localhost:3000',
-            'http://127.0.0.1:3000',
-        ]
+        # Default to permissive CORS so deploy domain changes do not break uploads.
+        return ['*']
 
     origins = [origin.strip() for origin in raw_origins.split(',') if origin.strip()]
     return origins if origins else ['*']
