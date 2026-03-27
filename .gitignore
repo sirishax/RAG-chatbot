@@ -16,5 +16,12 @@ __pycache__/
 *.log
 .DS_Store
 
+# Runtime data generated locally (do not deploy)
+backend/dataset/
+backend/uploads/
+backend/vectorstore/
+dataset/
+vectorstore/
+
 # VSCode settings
 .vscode/

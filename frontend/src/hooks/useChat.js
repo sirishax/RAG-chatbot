@@ -40,13 +40,14 @@ export const useChat = () => {
 
       setMessages(prev => [...prev, aiMessage]);
     } catch (err) {
-      setError(err.message);
+      const backendError = err?.message || 'Failed to get answer';
+      setError(backendError);
       
       // Add error message
       const errorMessage = {
         id: generateId(),
         type: 'error',
-        content: 'Sorry, I encountered an error while processing your question. Please try again.',
+        content: backendError,
         timestamp: new Date(),
       };
 

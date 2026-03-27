@@ -6,17 +6,16 @@ from werkzeug.utils import secure_filename
 import os
 import shutil
 import traceback
+import requests
 
 from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv, find_dotenv
-import google.generativeai as genai
 
 app = Flask(__name__)
-CORS(app)
 
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -24,12 +23,32 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 load_dotenv(find_dotenv())
 
+
+def parse_cors_origins(raw_origins):
+    """Parse CORS origins from comma-separated environment variable."""
+    if not raw_origins:
+        return [
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+        ]
+
+    origins = [origin.strip() for origin in raw_origins.split(',') if origin.strip()]
+    return origins if origins else ['*']
+
+
+CORS(app, resources={
+    r"/api/*": {
+        'origins': parse_cors_origins(os.getenv('CORS_ORIGINS')),
+    }
+})
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 DATASET_FOLDER = os.path.join(BASE_DIR, 'dataset')
 VECTOR_DB_PATH = os.path.join(BASE_DIR, 'vectorstore', 'database_fs')
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 ALLOWED_EXTENSIONS = {'pdf'}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -68,11 +87,11 @@ def create_chunks(extracted_data):
 
 
 def get_embedding_model():
-    """Initialize and cache the HuggingFace embedding model."""
+    """Initialize and cache a lightweight FastEmbed model."""
     global embedding_model
     if embedding_model is None:
-        embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        embedding_model = FastEmbedEmbeddings(
+            model_name="BAAI/bge-small-en-v1.5"
         )
     return embedding_model
 
@@ -106,25 +125,49 @@ def create_or_load_vectorstore(force_recreate=False):
 
 
 def load_llm(model_name: str):
-    """Load the Gemini language model."""
-    api_key = os.getenv('GEMINI_API_KEY')
+    """Load Groq configuration."""
+    api_key = os.getenv('GROQ_API_KEY')
     if not api_key:
-        raise ValueError("GEMINI_API_KEY not found in environment variables")
+        raise ValueError("GROQ_API_KEY not found in environment variables")
 
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(model_name)
+    fallback_models = [
+        model.strip()
+        for model in os.getenv('GROQ_FALLBACK_MODELS', '').split(',')
+        if model.strip()
+    ]
+
+    return {
+        'api_key': api_key,
+        'model': model_name,
+        'fallback_models': fallback_models,
+        'base_url': GROQ_BASE_URL,
+    }
+
+
+def ensure_llm_initialized():
+    """Initialize the LLM client if it has not been created yet."""
+    global llm_client
+    if llm_client is not None:
+        return llm_client
+
+    model_name = os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL)
+    llm_client = load_llm(model_name)
+    return llm_client
 
 
 CUSTOM_PROMPT_TEMPLATE = """
-You are a helpful and friendly assistant that answers questions strictly based on the provided context.
+You are a helpful and friendly assistant for document intelligence.
 
 Instructions:
-- Start the response with a short, friendly greeting like "Hello!", "Hi there!", or "Hey!".
-- Vary the greeting naturally to make responses feel less robotic.
-- After the greeting, immediately answer the user's question based only on the given context.
-- If the answer cannot be found in the context, reply: "I don't know based on the provided information."
-- Avoid adding any external knowledge, personal opinions, or fabricated information.
-- Keep the answer clear, factual, and concise.
+- Start with a short natural greeting.
+- Use only the provided context as factual evidence. Do not invent details.
+- Provide a richer, structured response with:
+    1) Direct Answer
+    2) Key Insights (3-6 bullets)
+    3) Practical Improvements/Recommendations (when the question asks "how to improve", "what next", or similar)
+- Recommendations must be grounded in the context and clearly phrased as suggestions.
+- If the context is insufficient, say: "I don't know based on the provided information." and then add what information is missing.
+- Keep tone clear and helpful, avoid generic filler.
 
 Here is the context:
 {context}
@@ -188,8 +231,22 @@ def process_single_pdf(file_path):
         db.save_local(VECTOR_DB_PATH)
         print(f"Vector store saved to: {VECTOR_DB_PATH}")
 
-        retriever = db.as_retriever(search_kwargs={'k': 3})
-        llm_client = load_llm(GEMINI_MODEL)
+        retriever = db.as_retriever(
+            search_type='mmr',
+            search_kwargs={
+                'k': 5,
+                'fetch_k': 20,
+                'lambda_mult': 0.7,
+            },
+        )
+
+        # PDF indexing should succeed even if Groq key is not configured yet.
+        try:
+            llm_client = ensure_llm_initialized()
+        except Exception as llm_error:
+            llm_client = None
+            print(f"LLM not initialized yet: {llm_error}")
+
         current_pdf = os.path.basename(file_path)
 
         print("=" * 60)
@@ -217,9 +274,22 @@ def initialize_qa_from_existing():
         if os.path.exists(VECTOR_DB_PATH):
             print("\nFound existing vector database, loading...")
             db = create_or_load_vectorstore(force_recreate=False)
-            retriever = db.as_retriever(search_kwargs={'k': 3})
-            llm_client = load_llm(GEMINI_MODEL)
-            print("Retriever and LLM client initialized from existing database.\n")
+            retriever = db.as_retriever(
+                search_type='mmr',
+                search_kwargs={
+                    'k': 5,
+                    'fetch_k': 20,
+                    'lambda_mult': 0.7,
+                },
+            )
+
+            try:
+                llm_client = ensure_llm_initialized()
+                print("Retriever and LLM client initialized from existing database.\n")
+            except Exception as llm_error:
+                llm_client = None
+                print(f"Retriever initialized. LLM not ready: {llm_error}\n")
+
             return True
     except Exception as exc:
         print(f"Could not load existing database: {exc}\n")
@@ -227,24 +297,77 @@ def initialize_qa_from_existing():
     return False
 
 
-def extract_response_text(response):
-    """Safely extract text from a Gemini response."""
-    try:
-        text = getattr(response, 'text', None)
-        if text:
-            return text.strip()
-    except Exception:
-        pass
+def extract_response_text(response_json):
+    """Safely extract text from a Groq chat completion response."""
+    choices = response_json.get('choices', [])
+    for choice in choices:
+        message = choice.get('message', {})
+        content = message.get('content', '')
+        if isinstance(content, str) and content.strip():
+            return content.strip()
 
-    candidates = getattr(response, 'candidates', None) or []
-    for candidate in candidates:
-        content = getattr(candidate, 'content', None)
-        parts = getattr(content, 'parts', None) or []
-        text_parts = [getattr(part, 'text', '') for part in parts if getattr(part, 'text', '')]
-        if text_parts:
-            return "".join(text_parts).strip()
+        if isinstance(content, list):
+            parts = [part.get('text', '') for part in content if isinstance(part, dict)]
+            joined = ''.join(parts).strip()
+            if joined:
+                return joined
 
     return ""
+
+
+def generate_with_groq(prompt):
+    """Generate answer text using Groq chat completions."""
+    if llm_client is None:
+        raise ValueError("LLM client is not initialized")
+
+    url = f"{llm_client['base_url']}/chat/completions"
+    headers = {
+        'Authorization': f"Bearer {llm_client['api_key']}",
+        'Content-Type': 'application/json',
+    }
+    model_candidates = [llm_client['model'], *llm_client.get('fallback_models', [])]
+    tried = []
+
+    for model_name in model_candidates:
+        payload = {
+            'model': model_name,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': prompt,
+                }
+            ],
+            'temperature': 0.35,
+            'max_tokens': 1000,
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
+
+        if response.status_code < 400:
+            return response.json()
+
+        error_payload = {}
+        try:
+            error_payload = response.json()
+        except Exception:
+            pass
+
+        error_message = (
+            error_payload.get('error', {}).get('message')
+            or error_payload.get('message')
+            or response.text
+            or 'Groq request failed'
+        )
+
+        tried.append(f"{model_name}: {response.status_code} {error_message}")
+
+        # Retry with fallback model for rate-limit/temporary saturation/no-endpoint issues.
+        if response.status_code in (404, 429, 503):
+            continue
+
+        raise Exception(f"{response.status_code} {error_message}")
+
+    raise Exception("All configured Groq models failed. " + " | ".join(tried))
 
 
 @app.route('/api/health', methods=['GET'])
@@ -254,7 +377,8 @@ def health_check():
         'status': 'ok',
         'message': 'Server is running',
         'qa_ready': retriever is not None and llm_client is not None,
-        'has_token': bool(os.getenv('GEMINI_API_KEY')),
+        'has_token': bool(os.getenv('GROQ_API_KEY')),
+        'model': os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL),
     })
 
 
@@ -310,8 +434,16 @@ def ask_question():
     global retriever, llm_client
 
     try:
-        if retriever is None or llm_client is None:
+        if retriever is None:
             return jsonify({'error': 'Please upload a PDF first'}), 400
+
+        if llm_client is None:
+            try:
+                ensure_llm_initialized()
+            except Exception:
+                return jsonify({
+                    'error': 'GROQ_API_KEY is missing or invalid. Add it to backend/.env and restart backend.',
+                }), 503
 
         data = request.get_json() or {}
         question = data.get('question', '').strip()
@@ -334,28 +466,14 @@ def ask_question():
 
         context = "\n\n".join([doc.page_content for doc in source_docs])
 
-        prompt = f"""You are a helpful and friendly assistant that answers questions strictly based on the provided context.
+        prompt_template = set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)
+        prompt = prompt_template.format(context=context, question=question)
 
-Instructions:
-- Start the response with a short, friendly greeting like "Hello!", "Hi there!", or "Hey!".
-- Vary the greeting naturally to make responses feel less robotic.
-- After the greeting, immediately answer the user's question based only on the given context.
-- If the answer cannot be found in the context, reply: "I don't know based on the provided information."
-- Avoid adding any external knowledge, personal opinions, or fabricated information.
-- Keep the answer clear, factual, and concise.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-
-        response = llm_client.generate_content(prompt)
-        answer = extract_response_text(response)
+        response_json = generate_with_groq(prompt)
+        answer = extract_response_text(response_json)
 
         if not answer:
-            print("Gemini returned no text content; using fallback answer.")
+            print("Groq returned no text content; using fallback answer.")
             answer = "I don't know based on the provided information."
 
         sources = []
@@ -374,9 +492,18 @@ Answer:"""
         }), 200
 
     except Exception as exc:
+        message = str(exc)
+        lowered = message.lower()
+        if '401' in message or 'invalid api key' in lowered or 'unauthorized' in lowered:
+            message = 'GROQ_API_KEY is invalid. Update backend/.env with a valid key and restart backend.'
+        elif '402' in message or 'insufficient credits' in lowered or 'payment' in lowered:
+            message = 'Groq credits are insufficient for this model. Use another available model or add credits.'
+        elif '429' in message or 'quota' in lowered or 'rate limit' in lowered:
+            message = 'Groq rate limit or quota reached. Wait and retry, or switch to another model.'
+
         print(f"ERROR GENERATING ANSWER: {exc}")
         traceback.print_exc()
-        return jsonify({'error': str(exc)}), 500
+        return jsonify({'error': message}), 500
 
 
 @app.route('/api/status', methods=['GET'])
@@ -384,6 +511,10 @@ def get_status():
     """Get current system status."""
     status = {
         'ready': retriever is not None and llm_client is not None,
+        'retrieverReady': retriever is not None,
+        'llmReady': llm_client is not None,
+        'hasGroqKey': bool(os.getenv('GROQ_API_KEY')),
+        'model': os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL),
         'currentPDF': current_pdf,
         'vectorStoreExists': os.path.exists(VECTOR_DB_PATH),
         'datasetFolder': DATASET_FOLDER,
@@ -437,18 +568,23 @@ if __name__ == '__main__':
     print(f"Dataset folder: {DATASET_FOLDER}")
     print(f"Vector store: {VECTOR_DB_PATH}")
 
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    if gemini_key:
-        print(f"Gemini API key found: {gemini_key[:10]}...")
+    groq_key = os.getenv('GROQ_API_KEY')
+    groq_model = os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL)
+    if groq_key:
+        print(f"Groq API key found: {groq_key[:10]}...")
+        print(f"Groq model: {groq_model}")
     else:
-        print("WARNING: No Gemini API key found in .env file")
-        print("Get one from: https://aistudio.google.com/app/apikey")
+        print("WARNING: No Groq API key found in .env file")
+        print("Get one from: https://console.groq.com/keys")
 
     print("=" * 70)
 
-    if os.path.exists(DATASET_FOLDER) and os.listdir(DATASET_FOLDER):
+    auto_init = os.getenv('AUTO_INIT_ON_START', '0') == '1'
+    if auto_init and os.path.exists(DATASET_FOLDER) and os.listdir(DATASET_FOLDER):
         print("\nFound existing PDFs in dataset folder")
         initialize_qa_from_existing()
+    elif not auto_init:
+        print("\nSkipping startup vector load (AUTO_INIT_ON_START=0).")
 
     print("\nServer is ready! Upload a PDF to get started.\n")
 

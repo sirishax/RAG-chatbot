@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { FiSend, FiTrash2, FiMessageSquare } from 'react-icons/fi';
 import ChatMessage from './ChatMessage';
 import LoadingSpinner from './LoadingSpinner';
+import ErrorMessage from './ErrorMessage';
 import { useChat } from '../hooks/useChat';
 
 /**
@@ -11,7 +12,7 @@ import { useChat } from '../hooks/useChat';
 const ChatInterface = ({ isDisabled }) => {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
-  const { messages, isLoading, sendMessage, clearChat } = useChat();
+  const { messages, isLoading, error, sendMessage, clearChat } = useChat();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,6 +70,8 @@ const ChatInterface = ({ isDisabled }) => {
 
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-gradient-to-b from-transparent via-dark-200/20 to-transparent">
+        {error && <ErrorMessage message={error} />}
+
         {messages.length === 0 ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -195,7 +198,7 @@ const ChatInterface = ({ isDisabled }) => {
           </p>
           {!isDisabled && (
             <p className="text-xs text-gray-600">
-              Powered by Gemini AI ✨
+              Powered by Groq ✨
             </p>
           )}
         </div>
